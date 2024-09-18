@@ -1,64 +1,105 @@
+;; Define the NFT
 (define-non-fungible-token nft-id uint)
 
+;; Define the listings map
 (define-map listings
-  ((nft-id uint)) ;; Key: NFT ID
-  ((seller principal) (price uint))) ;; Value: Seller and Price
+  {nft-id: uint}
+  {seller: principal, price: uint})
 
-(define-public (mint (nft-id uint))
-  ;; Mint a new NFT to the sender
+;; Define the royalties map
+(define-map royalties
+  {nft-id: uint}
+  {creator: principal, percentage: uint})
+
+;; Define constants
+(define-constant MIN_PRICE u1)
+(define-constant MAX_PRICE u1000000000) ;; 1 billion microSTX
+(define-constant MAX_ROYALTY_PERCENTAGE u20) ;; 20%
+(define-constant ERR_NFT_NOT_LISTED (err u103))
+(define-constant ERR_INSUFFICIENT_FUNDS (err u102))
+(define-constant ERR_TRANSFER_FAILED (err u108))
+(define-constant ERR_INVALID_ROYALTY (err u110))
+
+;; Mint a new NFT with royalty
+(define-public (mint-with-royalty (token-id uint) (royalty-percentage uint))
   (begin
-    (asserts! (is-none (nft-get-owner? nft-id)) (err u100)) ;; Ensure NFT doesn't already exist
-    (nft-mint? nft-id tx-sender)
+    (asserts! (is-none (nft-get-owner? nft-id token-id)) (err u100))
+    (asserts! (<= royalty-percentage MAX_ROYALTY_PERCENTAGE) ERR_INVALID_ROYALTY)
+    (try! (nft-mint? nft-id token-id tx-sender))
+    (map-set royalties
+      {nft-id: token-id}
+      {creator: tx-sender, percentage: royalty-percentage})
+    (ok true)
   )
 )
 
-(define-public (list-nft (nft-id uint) (price uint))
-  ;; List an NFT for sale
-  (let ((owner (nft-get-owner? nft-id)))
+;; List an NFT for sale
+(define-public (list-nft (token-id uint) (price uint))
+  (let ((owner (nft-get-owner? nft-id token-id)))
     (begin
-      (asserts! (is-eq owner (some tx-sender)) (err u101)) ;; Ensure the sender is the owner
-      (map-set listings
-        ((nft-id nft-id))
-        ((seller tx-sender) (price price)))
-      (ok (some price))
+      (asserts! (is-some owner) (err u105))
+      (asserts! (is-eq (some tx-sender) owner) (err u101))
+      (asserts! (and (>= price MIN_PRICE) (<= price MAX_PRICE)) (err u107))
+      (ok (map-set listings
+        {nft-id: token-id}
+        {seller: tx-sender, price: price}))
     )
   )
 )
 
-(define-public (purchase-nft (nft-id uint))
-  ;; Purchase an NFT from the marketplace
-  (let
-    (
-      (listing (map-get listings ((nft-id nft-id))))
-      (buyer tx-sender)
+;; Helper function to calculate royalty
+(define-read-only (calculate-royalty (price uint) (percentage uint))
+  (/ (* price percentage) u100)
+)
+
+;; Purchase an NFT from the marketplace
+(define-public (purchase-nft (token-id uint))
+  (let (
+    (listing (unwrap! (map-get? listings {nft-id: token-id}) ERR_NFT_NOT_LISTED))
+    (royalty-info (default-to {creator: tx-sender, percentage: u0} (map-get? royalties {nft-id: token-id})))
+    (buyer tx-sender)
+  )
+    (let (
+      (seller (get seller listing))
+      (price (get price listing))
+      (royalty-amount (calculate-royalty price (get percentage royalty-info)))
+      (seller-amount (- price royalty-amount))
     )
-    (match listing
-      listing-data
-      (let
-        (
-          (seller (get seller listing-data))
-          (price (get price listing-data))
+      (begin
+        (asserts! (is-some (nft-get-owner? nft-id token-id)) (err u109))
+        (asserts! (>= (stx-get-balance buyer) price) ERR_INSUFFICIENT_FUNDS)
+        ;; Transfer royalty to creator
+        (if (> royalty-amount u0)
+          (try! (stx-transfer? royalty-amount buyer (get creator royalty-info)))
+          true
         )
-        (begin
-          (asserts! (>= (stx-get-balance buyer) price) (err u102)) ;; Ensure buyer has enough STX
-          (stx-transfer? price buyer seller) ;; Transfer STX from buyer to seller
-          (nft-transfer? nft-id seller buyer) ;; Transfer NFT from seller to buyer
-          (map-delete listings ((nft-id nft-id))) ;; Remove the NFT from the listing
-          (ok buyer)
-        )
+        ;; Transfer remaining amount to seller
+        (try! (stx-transfer? seller-amount buyer seller))
+        (match (nft-transfer? nft-id token-id seller buyer)
+          success (begin
+            (map-delete listings {nft-id: token-id})
+            (ok true))
+          error (begin
+            (try! (stx-transfer? price seller buyer))
+            ERR_TRANSFER_FAILED))
       )
-      (err u103) ;; NFT is not listed for sale
     )
   )
 )
 
-(define-public (transfer-nft (nft-id uint) (recipient principal))
-  ;; Transfer an NFT to another user
-  (let ((owner (nft-get-owner? nft-id)))
+;; Transfer an NFT to another user
+(define-public (transfer-nft (token-id uint) (recipient principal))
+  (let ((owner (nft-get-owner? nft-id token-id)))
     (begin
-      (asserts! (is-eq owner (some tx-sender)) (err u104)) ;; Ensure the sender is the owner
-      (nft-transfer? nft-id tx-sender recipient) ;; Transfer NFT
-      (ok recipient)
+      (asserts! (is-some owner) (err u106))
+      (asserts! (is-eq (some tx-sender) owner) (err u104))
+      (nft-transfer? nft-id token-id tx-sender recipient)
     )
   )
+)
+
+;; Get royalty information for an NFT
+(define-read-only (get-royalty-info (token-id uint))
+  (default-to {creator: tx-sender, percentage: u0}
+    (map-get? royalties {nft-id: token-id}))
 )
