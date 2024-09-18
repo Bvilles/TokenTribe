@@ -52,4 +52,4 @@ To deploy and interact with this contract, you will need:
 
 ## Author 
 
-Blessing Chukwuma
+Blessing Chukwuma Unakalamba
