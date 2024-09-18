@@ -6,18 +6,30 @@
   {nft-id: uint}
   {seller: principal, price: uint})
 
+;; Define the royalties map
+(define-map royalties
+  {nft-id: uint}
+  {creator: principal, percentage: uint})
+
 ;; Define constants
 (define-constant MIN_PRICE u1)
-(define-constant MAX_PRICE u1000000000) ;; 1 billion microSTX, adjust as needed
+(define-constant MAX_PRICE u1000000000) ;; 1 billion microSTX
+(define-constant MAX_ROYALTY_PERCENTAGE u20) ;; 20%
 (define-constant ERR_NFT_NOT_LISTED (err u103))
 (define-constant ERR_INSUFFICIENT_FUNDS (err u102))
 (define-constant ERR_TRANSFER_FAILED (err u108))
+(define-constant ERR_INVALID_ROYALTY (err u110))
 
-;; Mint a new NFT
-(define-public (mint (token-id uint))
+;; Mint a new NFT with royalty
+(define-public (mint-with-royalty (token-id uint) (royalty-percentage uint))
   (begin
     (asserts! (is-none (nft-get-owner? nft-id token-id)) (err u100))
-    (nft-mint? nft-id token-id tx-sender)
+    (asserts! (<= royalty-percentage MAX_ROYALTY_PERCENTAGE) ERR_INVALID_ROYALTY)
+    (try! (nft-mint? nft-id token-id tx-sender))
+    (map-set royalties
+      {nft-id: token-id}
+      {creator: tx-sender, percentage: royalty-percentage})
+    (ok true)
   )
 )
 
@@ -35,20 +47,34 @@
   )
 )
 
+;; Helper function to calculate royalty
+(define-read-only (calculate-royalty (price uint) (percentage uint))
+  (/ (* price percentage) u100)
+)
+
 ;; Purchase an NFT from the marketplace
 (define-public (purchase-nft (token-id uint))
   (let (
     (listing (unwrap! (map-get? listings {nft-id: token-id}) ERR_NFT_NOT_LISTED))
+    (royalty-info (default-to {creator: tx-sender, percentage: u0} (map-get? royalties {nft-id: token-id})))
     (buyer tx-sender)
   )
     (let (
       (seller (get seller listing))
       (price (get price listing))
+      (royalty-amount (calculate-royalty price (get percentage royalty-info)))
+      (seller-amount (- price royalty-amount))
     )
       (begin
         (asserts! (is-some (nft-get-owner? nft-id token-id)) (err u109))
         (asserts! (>= (stx-get-balance buyer) price) ERR_INSUFFICIENT_FUNDS)
-        (try! (stx-transfer? price buyer seller))
+        ;; Transfer royalty to creator
+        (if (> royalty-amount u0)
+          (try! (stx-transfer? royalty-amount buyer (get creator royalty-info)))
+          true
+        )
+        ;; Transfer remaining amount to seller
+        (try! (stx-transfer? seller-amount buyer seller))
         (match (nft-transfer? nft-id token-id seller buyer)
           success (begin
             (map-delete listings {nft-id: token-id})
@@ -70,4 +96,10 @@
       (nft-transfer? nft-id token-id tx-sender recipient)
     )
   )
+)
+
+;; Get royalty information for an NFT
+(define-read-only (get-royalty-info (token-id uint))
+  (default-to {creator: tx-sender, percentage: u0}
+    (map-get? royalties {nft-id: token-id}))
 )
