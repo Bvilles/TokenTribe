@@ -20,6 +20,7 @@
 (define-constant ERR_TRANSFER_FAILED (err u108))
 (define-constant ERR_INVALID_ROYALTY (err u110))
 (define-constant ERR_NOT_OWNER (err u111))
+(define-constant ERR_LISTING_NOT_FOUND (err u112))
 
 ;; Mint a new NFT with royalty
 (define-public (mint-with-royalty (token-id uint) (royalty-percentage uint))
@@ -60,6 +61,19 @@
       (ok (map-set listings
         {nft-id: token-id}
         {seller: seller, price: new-price}))
+    )
+  )
+)
+
+;; Cancel a listing
+(define-public (cancel-listing (token-id uint))
+  (let (
+    (listing (unwrap! (map-get? listings {nft-id: token-id}) ERR_LISTING_NOT_FOUND))
+    (seller (get seller listing))
+  )
+    (begin
+      (asserts! (is-eq tx-sender seller) ERR_NOT_OWNER)
+      (ok (map-delete listings {nft-id: token-id}))
     )
   )
 )
