@@ -181,6 +181,7 @@
     (asserts! (is-valid-token-id token-id) ERR_INVALID_TOKEN_ID)
     (asserts! (is-eq (nft-get-owner? nft-id token-id) (some tx-sender)) ERR_NOT_OWNER)
     (asserts! (and (>= duration MIN_AUCTION_DURATION) (<= duration MAX_AUCTION_DURATION)) ERR_INVALID_AUCTION_DURATION)
+    (asserts! (and (>= min-bid MIN_PRICE) (<= min-bid MAX_PRICE)) (err u122)) ;; Check if min-bid is within acceptable range
     (ok (map-set auctions
       {nft-id: token-id}
       {seller: tx-sender, min-bid: min-bid, end-block: (+ block-height duration)}))
@@ -189,10 +190,12 @@
 
 ;; Place a bid on an auctioned NFT
 (define-public (place-bid (token-id uint) (bid-amount uint))
-  (let ((auction (unwrap! (map-get? auctions {nft-id: token-id}) ERR_AUCTION_NOT_FOUND)))
-    (begin
+  (begin
+    (asserts! (is-valid-token-id token-id) ERR_INVALID_TOKEN_ID)
+    (let ((auction (unwrap! (map-get? auctions {nft-id: token-id}) ERR_AUCTION_NOT_FOUND)))
       (asserts! (< block-height (get end-block auction)) ERR_AUCTION_ENDED)
       (asserts! (>= bid-amount (get min-bid auction)) ERR_BID_TOO_LOW)
+      (asserts! (<= bid-amount MAX_PRICE) (err u123)) ;; Check if bid-amount is not too high
       (let ((current-bid (map-get? bids {nft-id: token-id})))
         (match current-bid
           prev-bid (asserts! (> bid-amount (get amount prev-bid)) ERR_BID_TOO_LOW)
@@ -200,11 +203,11 @@
         )
       )
       (asserts! (>= (stx-get-balance tx-sender) bid-amount) ERR_INSUFFICIENT_FUNDS)
-      (map-set bids {nft-id: token-id} {bidder: tx-sender, amount: bid-amount})
-      (ok true)
+      (ok (map-set bids {nft-id: token-id} {bidder: tx-sender, amount: bid-amount}))
     )
   )
 )
+
 
 ;; End an auction and transfer the NFT to the highest bidder
 (define-public (end-auction (token-id uint))
